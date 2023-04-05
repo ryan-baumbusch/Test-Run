@@ -1,0 +1,450 @@
+---
+title: "Found data exploration"
+author: "Sean Gee"
+date: '2022-05-01'
+output: html_document
+---
+
+# This is a RMarkdown file created by Sean Gee. It appears that it was intially written to either run from Box, or to pull data directly from Box to run. Currently I have it set up to run from my laptop, but I should figure out how to run it as Sean had it set up, as that seems very useful for sharing work. Asiode from the modifactions of where data are sourced, no other changes have been made. The code all worked well otherwise, and plots were generated. Now I need to sit down and figure out what is actually going on in here.
+
+# Found data exploration
+
+This script is all about graphing the audiovisual MAMU data into oblivion. The
+purpose is to explore how the data looks, examine relationships, look for
+errors, check for bias, etc etc. The goal is to create plots and maps of
+everything. 
+
+***** Special note: look at old growth forest area across different distances from the coast. Betts et al 2020 found that occupancy rates decreased as distance
+from coast increased. Question is: does this reflect a biological aspect of MAMU, or were more forest lands logged further inland compared to the coast????? ****
+
+### The data
+
+First step will be subsetting the data and making it so that they are all in the same format for use. Important information to include: survey dates, area (stand) name/location, survey site names/locations, unique identifiers for each 2-yr survey, state, county, district, agency name (ODF, BLM, DFW), observer name/affiliation (if available), summary of detection info (# significant detections, # non-significant detections, total # seen (sig and non-sig), # heard, total # detections (sig and non-sig). (List created 5/17/2022, to be updated as appropriate).
+
+
+
+WDFW data summary
+```{r, echo = FALSE}
+# First step is to load the data, starting with WA
+library(sf) # for loading shapefiles of detections
+
+# Macbook version
+#waDetections <- read_sf(dsn = '/Users/seangee/Library/CloudStorage/Box-Box/PNW MAMU/Data exploration/Data/MamuDetections_06302021.shp')
+
+#waNonDetections <- read_sf(dsn = '/Users/seangee/Library/CloudStorage/Box-Box/PNW MAMU/Data exploration/Data/MamuNonDetections_06302021.shp')
+
+# Windows version
+# waDetections <- read_sf(dsn = 'C:/Users/gees/Box/PNW MAMU/Data exploration/Data/MamuDetections_06302021.shp')
+ 
+# waNonDetections <- read_sf(dsn = 'C:/Users/gees/Box/PNW MAMU/Data exploration/Data/MamuNonDetections_06302021.shp')
+ 
+
+# The above code to read in files from box looks useful. Dig into that and see if you can get it to work, in the mean time I have a more brute force method of just pasting the files to my computer from box to get started working with them.
+ 
+waDetections <- read_sf(dsn = 'Data/MamuDetections_06302021.shp')
+
+waNonDetections <- read_sf(dsn = 'Data/MamuNonDetections_06302021.shp')
+
+# In the detection data each row represents an individual detection, whereas in the non-detection data each row represents a complete survey. The detection data will need to be changed so that each row represents a survey, with summaries of survey results.
+waDetections$Year <- as.numeric(strftime(waDetections$EffortDate, format = '%Y'))
+waDetections$Month <- as.numeric(strftime(waDetections$EffortDate, format = '%m'))
+waDetections <- waDetections[waDetections$Year >= 2003, ]
+waDetections <- waDetections[waDetections$Month >= 5 & waDetections$Month < 9, ]
+waDetections <- waDetections[waDetections$WDFWStat == 3 | waDetections$WDFWStat == 4, ]
+waDetections <- subset(waDetections, AreaName != 'AREA_BLANK')
+waDetections <- waDetections[waDetections$EffortSo_1 == 'WDFW survey' | waDetections$EffortSo_1 == 'Other survey', ]
+
+waNonDetections$Year <- as.numeric(strftime(waNonDetections$EffortDate, format = '%Y'))
+waNonDetections$Month <- as.numeric(strftime(waNonDetections$EffortDate, format = '%m'))
+waNonDetections <- waNonDetections[waNonDetections$Year >= 2003, ]
+waNonDetections <- waNonDetections[waNonDetections$Month >= 5 & waNonDetections$Month < 9, ]
+waNonDetections <- subset(waNonDetections, AreaName != 'AREA_BLANK')
+
+plot(waDetections)
+summary(waDetections)
+
+#plot(waNonDetections)
+#summary(waNonDetections)
+
+# For non detection data "Name" column is equivalent to the "StationName" column in detection data. The goal is to summarize the detection data that each row represents one survey, then subset non-detection data so that it matches up and everything can be joined together.
+
+library(dplyr)
+
+wS <- waDetections %>% 
+  group_by(EffortID, EffortDate, ObsAffil, CountyName, WDFWRegion, AreaName, SubAreaNam, StationNam, Year, Month) %>% 
+  summarise(sig_det = length(which(WDFWStat == 3)), 
+            non_sig_det = length(which(WDFWStat == 4)),
+            total_seen = length(which(MurreletDe == "Seen" | MurreletDe == "Both")),
+            total_heard = length(which(MurreletDe == "Heard" | MurreletDe == "Both")),
+            total_det = length(WDFWStat)) %>% 
+  select(-EffortID)
+
+wN <- waNonDetections %>% 
+  select(EffortDate, ObsAffil, CountyName, WDFWRegion, AreaName, SubAreaNam, Name, Year, Month) %>%
+  mutate(sig_det = rep(0, length(EffortDate)), 
+            non_sig_det = rep(0, length(EffortDate)),
+            total_seen = rep(0, length(EffortDate)),
+            total_heard = rep(0, length(EffortDate)),
+            total_det = rep(0, length(EffortDate))) %>% 
+  rename(StationNam = Name)
+  
+
+waSurveyPoints <- rbind(wS, wN)
+summary(waSurveyPoints)
+
+waSurveyPoints$occ.states <- ifelse(waSurveyPoints$sig_det > 0, 2, ifelse(waSurveyPoints$sig_det == 0 & waSurveyPoints$non_sig_det > 0, 1, 0))
+```
+
+ODF data summary
+```{r, echo = FALSE}
+# Load ODFW data
+
+# Macbook version
+#odfSurveys <- read_sf(dsn = '/Users/seangee/Library/CloudStorage/Box-Box/PNW MAMU/Data exploration/Data/Biology_MurreletSurveyPoints.shp')
+
+# Windows version
+#odfSurveys <- read_sf(dsn = '/Users/gees/Box/PNW MAMU/Data exploration/Data/Biology_MurreletSurveyPoints.shp')
+
+# Again, the quick and dirty loading of geospatial data. Figure out how to get that connection with Box.
+odfSurveys <- read_sf(dsn = 'Data/Biology_MurreletSurveyPoints.shp')
+
+
+#plot(odfwSurveyPoints)  doesn't plot well in this format, but shows up on mapview
+
+odfSurveys$MONTH <- as.numeric(strftime(odfSurveys$DATE, format = '%m'))
+odfSurveys <- odfSurveys[odfSurveys$YEAR >= 2003, ]
+odfSurveys <- odfSurveys[odfSurveys$MONTH >= 5 & odfSurveys$MONTH < 9, ]
+
+# Make it in the same format as the WA data
+# Few things to note: above canopy circling (BEHAVC) is not a significant behavior.
+
+odfSurveyPoints <- odfSurveys %>% 
+  mutate(sig_det = BEHAVB + BEHAVT + BEHAVL + BEHAVS,
+         non_sig_det = BEHAVF + BEHAVC + BEHAVU,
+         total_seen = BEHAVF + BEHAVC + BEHAVB + BEHAVT + BEHAVL,
+         total_heard = BEHAVS + BEHAVU,
+         total_det = BEHAVB + BEHAVC + BEHAVF + BEHAVL + BEHAVS + BEHAVT + BEHAVU) %>% 
+  select(DATE, CON, DISTRICT, SITE_CODE, SURVEY_ARE, SITE, STATION, YEAR, MONTH, sig_det, non_sig_det, total_seen, total_heard, total_det) 
+  
+summary(odfSurveyPoints)
+odfSurveyPoints$occ.states <- ifelse(odfSurveyPoints$sig_det > 0, 2, ifelse(odfSurveyPoints$sig_det == 0 & odfSurveyPoints$non_sig_det > 0, 1, 0))
+```
+
+BLM data summary
+```{r, echo = FALSE}
+library(stringr)
+# load the BLM OR data. 
+# This data is a bit convoluted because they broke it up into three shapesfiles, representing station locations, occupied survey location polygons, and survey polygons, and then relational tables that contain such info as detections and weather. Guessing they did this to follow database best practices. Unique IDs for each station/survey and related information can be used to join all of this data together. There will be more rows for this combined data.frame than there will be for any one of these objects by themselves. Leaving out weather for now because it is not good
+
+# # Survey site (stand) polygons. We will use this to group stations together into the same survey.
+# blmMamuSurveySite <- read_sf(dsn = '/Users/gees/Box/PNW MAMU/Data exploration/Data/BLM_MAMU_SRV_SITE.shp')
+# 
+# 
+# # Station points. Note that column 7, STTN_PLCMN corresponds to station placement, which equal either I (inside stand), O (outside stand), or E (edge, 50 m from the edge, either inside or outside of the stand).
+# blmMamuStation <- read_sf(dsn = '/Users/gees/Box/PNW MAMU/Data exploration/Data/BLM_MAMU_STATION.shp')
+# 
+# # Survey data. We only want those that were conducted with the PSG protocol, so filter out those with MSRV_PROTO_YN ==N. 
+# blmMamuSurvey <- read.table('/Users/gees/Box/PNW MAMU/Data exploration/Data/BLM_MAMU_SURVEY.txt',
+#                             header = TRUE,
+#                             sep = ",",
+#                             blank.lines.skip = T,
+#                             fill = T)
+
+# The below lines are modified to bring in data from my laptop rather than from Box. And again! Figure out how to read data directly from Box.
+# Survey site (stand) polygons. We will use this to group stations together into the same survey.
+blmMamuSurveySite <- read_sf(dsn = 'Data/BLM_MAMU_SRV_SITE.shp')
+
+
+# Station points. Note that column 7, STTN_PLCMN corresponds to station placement, which equal either I (inside stand), O (outside stand), or E (edge, 50 m from the edge, either inside or outside of the stand).
+blmMamuStation <- read_sf(dsn = 'Data/BLM_MAMU_STATION.shp')
+
+# Survey data. We only want those that were conducted with the PSG protocol, so filter out those with MSRV_PROTO_YN ==N. 
+blmMamuSurvey <- read.table('Data/BLM_MAMU_SURVEY.txt',
+                            header = TRUE,
+                            sep = ",",
+                            blank.lines.skip = T,
+                            fill = T)
+
+# Filter so that only protocol surveys remain.
+blmMamuSurvey <- filter(blmMamuSurvey, MSRV_PROTO_YN == 'Y')
+
+# Detection data. ~220 rows of junk data, so filter it so that DET_TYPE contains either S (seen), H (heard), or B (both). 
+# blmMamuDetections <- read.table('/Users/gees/Box/PNW MAMU/Data exploration/Data/BLM_MAMU_DETECTIONS.txt',
+#                                 header = T,
+#                                 sep = ',',
+#                                 blank.lines.skip = T,
+#                                 fill = T)
+blmMamuDetections <- read.table('Data/BLM_MAMU_DETECTIONS.txt',
+                                header = T,
+                                sep = ',',
+                                blank.lines.skip = T,
+                                fill = T)
+
+blmMamuDetections <- blmMamuDetections %>%
+  filter(DET_TYPE %in% c("H", "S", "B"))
+
+# Next step is to summarize the detections data the way the other two data sets were summarized. They have no dates in this, so this is sketchy territory on this first go (6/6/2022). Note that DET_BEHAVE matches values for PSG survey protocol.
+blmMamuDetSums <- blmMamuDetections %>% 
+  group_by(MSRV_CN) %>% 
+  summarise(sig_det = length(which(DET_BEHAVE == 'B' | DET_BEHAVE == 'L' | DET_BEHAVE == 'S' | DET_BEHAVE == 'T')),
+            non_sig_det = length(which(DET_BEHAVE == 'C' | DET_BEHAVE == 'F' | DET_BEHAVE == 'U')),
+            total_seen = length(which(DET_TYPE == 'S' | DET_TYPE == 'B')),
+            total_heard = length(which(DET_TYPE == 'H' | DET_TYPE == 'B')),
+            total_det = length(DET_TYPE))
+  
+
+blmMamuData <- inner_join(blmMamuStation, blmMamuSurvey, by = 'STTN_CN') %>% # inner_join first to get ride of stations that don't have survey data for them (not sure why????)
+  left_join(., blmMamuDetSums, by = 'MSRV_CN') %>% 
+  mutate(MONTH = as.numeric(strftime(as.POSIXct(MSRV_DATE, format = '%m/%d/%Y %H:%M:%S'), format = '%m')),
+                YEAR = as.numeric(strftime(as.POSIXct(MSRV_DATE, format = '%m/%d/%Y %H:%M:%S'), format = '%Y')),
+                MSRV_DATE = as.POSIXct(MSRV_DATE, format = '%m/%d/%Y')) %>% 
+  filter(STTN_CN != '{364E9FF1-3CC6-41FD-BBA7-06187BF7BE2B}') # Looking at the map, this one was a survey done in response to someone thinking they saw a MAMU (unsure if incidental, but no other surveys are close to this location (east of I5, just SE of Roseburg)). 
+
+blmMamuData <- blmMamuData[blmMamuData$YEAR >= 2003, ]
+blmMamuData <- blmMamuData[blmMamuData$MONTH >= 5 & blmMamuData$MONTH < 9, ]
+blmMamuData <- tidyr::drop_na(blmMamuData, 'OBJECTID.x')
+
+remove(list = c("blmMamuStation", 'blmMamuDetections', 'blmMamuSurvey')) # no longer needed, for now???
+summary(blmMamuData)
+```
+
+
+## The exploration
+Graph the data and see what comes of it. One thing to look at: if they only heard MAMU at a survey site/area during one survey/year, would they be more likely to have a significant detection the next survey/year?
+
+
+First look at how the number of surveys changed over the years for the data
+
+```{r, echo = FALSE}
+library(ggplot2)
+
+ngOdf <- st_drop_geometry(odfSurveyPoints) # makes it easier to work with when you drop the geometry
+odfSurveysYC <- stats::aggregate(ngOdf['total_det'], by = ngOdf[c('YEAR', 'DISTRICT')], length) # number of surveys/year & county for ODFW
+
+waSurveysYC <- stats::aggregate(total_det ~ Year + CountyName, data = waSurveyPoints, length) # numbers surveys/year & county for WA
+
+
+#blmSurveysYC <- stats::aggregate(MSRV_CN ~ YEAR, data = blmMamuData, FUN = function(y) length(unique(y)))
+
+ggplot(data = odfSurveysYC) +
+  geom_bar(aes(x = as.factor(YEAR), y = total_det), stat = 'identity') + 
+  xlab('year') + ylab('total number of surveys per year') + labs(title = "ODF")+ 
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data = odfSurveysYC) +
+  geom_bar(aes(x = as.factor(YEAR), y = total_det), stat = 'identity') + 
+  xlab('year') + ylab('total number of surveys per year') + labs(title = "ODF") +
+  facet_wrap('DISTRICT') + 
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data = waSurveysYC) +
+  geom_bar(aes(x = as.factor(Year), y = total_det), stat = 'identity') + 
+  xlab('year') + ylab('total number of surveys per year') + labs(title = "WA") + 
+  theme(axis.text.x = element_text(angle = 90))
+
+ggplot(data = waSurveysYC) +
+  geom_bar(aes(x = as.factor(Year), y = total_det), stat = 'identity') + 
+  xlab('year') + ylab('total number of surveys per year') + labs(title = "WA") +
+  facet_wrap('CountyName') + 
+  theme(axis.text.x = element_text(angle = 90))
+
+# Note Ryan: the data do not exist in this .Rmd file.
+# ggplot(data = blmCounts) +
+#   geom_bar(aes(x = as.factor(YEAR), y = MSRV_CN), stat = 'identity') +
+#   xlab('year') + ylab('total number of surveys per year') + labs(title = "BLM OR")
+```
+
+Next section is graphs of surveys per year and county, showing numbers of detections (significant, non-significant) as well as ratios of sig:non sig, detection type:survey total, detection:non-detection, etc
+```{r, echo = FALSE}
+# Run to create counts and ratios of different surveys
+waDetVNonDet <- waSurveyPoints %>% 
+  st_drop_geometry() %>% 
+  group_by(Year, CountyName) %>% 
+  summarise(n.surv.det = length(which(total_det > 0)),
+            n.surv.non = length(which(total_det == 0)),
+            n.sig.det = length(which(sig_det > 0)),
+            n.non.sig.det = length(which(total_det > 0 & sig_det == 0)),
+            n.survey = length(total_det))%>% 
+  mutate(ratio.det.non = n.surv.det / n.surv.non,
+         ratio.sig.non.sig = n.sig.det / n.non.sig.det,
+         ratio.sig.det = n.sig.det / n.surv.det,
+         ratio.sig.survey = n.sig.det / n.survey,
+         ratio.non.sig.survey = n.non.sig.det / n.survey,
+         ratio.det.survey = n.surv.det / n.survey,
+         label = 'WA') %>% 
+    as.data.frame()
+
+# NaN (esp. for 0 / 0) and Inf (say more sig = 1 and non sig = 0, 1 / 0) values are produced for some of these. Fix it
+waDetVNonDet$ratio.sig.non.sig[is.nan(waDetVNonDet$ratio.sig.non.sig)] <- 0
+waDetVNonDet$ratio.sig.det[is.nan(waDetVNonDet$ratio.sig.det)] <- 0
+
+# ODF count data
+odfDetVNonDet <- odfSurveyPoints %>% 
+  st_drop_geometry() %>% 
+  group_by(YEAR, DISTRICT) %>% 
+  summarise(n.surv.det = length(which(total_det > 0)),
+            n.surv.non = length(which(total_det == 0)),
+            n.sig.det = length(which(sig_det > 0)),
+            n.non.sig.det = length(which(total_det > 0 & sig_det == 0)),
+            n.survey = length(total_det))%>% 
+  mutate(ratio.det.non = n.surv.det / n.surv.non,
+         ratio.sig.non.sig = n.sig.det / n.non.sig.det,
+         ratio.sig.det = n.sig.det / n.surv.det,
+         ratio.sig.survey = n.sig.det / n.survey,
+         ratio.non.sig.survey = n.non.sig.det / n.survey,
+         ratio.det.survey = n.surv.det / n.survey,
+         label = 'ODF') %>% 
+    as.data.frame()
+odfDetVNonDet$ratio.sig.non.sig[is.nan(odfDetVNonDet$ratio.sig.non.sig)] <- 0
+odfDetVNonDet$ratio.sig.det[is.nan(odfDetVNonDet$ratio.sig.det)] <- 0
+
+
+#### Now to graph and see what is happening
+
+# surveys w/detections per year
+func.det.year <- function(data = data, x = year, dept = dept) { # dept = whoever's data it is (ODF, WA, BLM); must be in quotes. Number surveys w/detections per year
+  ggplot() + geom_bar(data = data, aes(x = as.factor(x), y = n.surv.det), stat = 'identity') +
+  xlab('year') + ylab('# surveys with detections') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = paste(dept, '# surveys w/detections per year', sep = " "))
+}
+
+func.det.year(odfDetVNonDet, x = odfDetVNonDet$YEAR, dept = 'ODF')
+
+ggplot() + 
+  geom_bar(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = n.surv.det), stat = 'identity') +
+  xlab('year') + ylab('# surveys with detections') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF # surveys w/detections per year') + 
+  facet_wrap('DISTRICT')
+
+func.det.year(waDetVNonDet, x = waDetVNonDet$Year, dept = 'WA')
+
+ggplot() + 
+  geom_bar(data = waDetVNonDet, aes(x = as.factor(Year), y = n.surv.det), stat = 'identity') +
+  xlab('year') + ylab('# surveys with detections') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA # surveys w/detections per year') + 
+  facet_wrap('CountyName')
+
+##### Ratio surveys w/ significant detections to all surveys
+ggplot() + geom_boxplot(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = ratio.sig.survey)) +
+  xlab('year') + ylab('ratio  # signficant detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF ratio # surveys w/sig detection:surveys')
+
+ggplot() + geom_bar(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = ratio.sig.survey), stat = 'identity') +
+  xlab('year') + ylab('ratio  # signficant detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF ratio # surveys w/sig detection:surveys per county') +
+  facet_wrap('DISTRICT')
+
+ggplot() + geom_boxplot(data = waDetVNonDet, aes(x = as.factor(Year), y = ratio.sig.survey)) +
+  xlab('year') + ylab('ratio  # signficant detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA ratio # surveys w/sig detection:surveys')
+
+ggplot() + geom_bar(data = waDetVNonDet, aes(x = as.factor(Year), y = ratio.sig.survey), stat = 'identity') +
+  xlab('year') + ylab('ratio  # signficant detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA ratio # surveys w/sig detection:surveys per county') +
+  facet_wrap('CountyName')
+
+#### Ratio sig detections to surveys with detections (any)
+ggplot() + geom_boxplot(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = ratio.sig.det)) +
+  xlab('year') + ylab('ratio  # signficant detections:all detections') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF ratio # surveys w/sig detection:all surveys w/detections')
+
+ggplot() + geom_bar(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = ratio.sig.det), stat = 'identity') +
+  xlab('year') + ylab('ratio  # signficant detections:all detections') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF ratio # surveys w/sig detection:all surveys w/detections per county') +
+  facet_wrap('DISTRICT')
+
+ggplot() + geom_boxplot(data = waDetVNonDet, aes(x = as.factor(Year), y = ratio.sig.det)) +
+  xlab('year') + ylab('ratio  # signficant detections:all detectiosn') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA ratio # surveys w/sig detection:all surveys w/detections')
+
+ggplot() + geom_bar(data = waDetVNonDet, aes(x = as.factor(Year), y = ratio.sig.det), stat = 'identity') +
+  xlab('year') + ylab('ratio  # signficant detections:detections') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA ratio # surveys w/sig detection:all surveys w/detections per county') +
+  facet_wrap('CountyName')
+
+#### Ratio surveys with detections:surveys
+ggplot() + geom_boxplot(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = ratio.det.survey)) +
+  xlab('year') + ylab('ratio surveys w/detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF ratio # surveys w/detection:all surveys')
+
+ggplot() + geom_bar(data = odfDetVNonDet, aes(x = as.factor(YEAR), y = ratio.det.survey), stat = 'identity') +
+  xlab('year') + ylab('ratio surveys w/detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'ODF ratio # surveys w/detection:all surveys per county') +
+  facet_wrap('DISTRICT')
+
+ggplot() + geom_boxplot(data = waDetVNonDet, aes(x = as.factor(Year), y = ratio.det.survey)) +
+  xlab('year') + ylab('ratio surveys w/detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA ratio ratio # surveys w/detection:all surveys')
+
+ggplot() + geom_bar(data = waDetVNonDet, aes(x = as.factor(Year), y = ratio.det.survey), stat = 'identity') +
+  xlab('year') + ylab('ratio surveys w/detections:surveys') + theme(axis.text.x = element_text(angle = 90)) + 
+  labs(title = 'WA ratio # surveys w/detection:all surveys per county') +
+  facet_wrap('CountyName')
+```
+
+How many surveys per station/stand?
+```{r, echo = FALSE}
+# Stations per stand
+odfSPS <- odfSurveyPoints %>% 
+  st_drop_geometry() %>% 
+  group_by(YEAR, SURVEY_ARE, DISTRICT, SITE_CODE) %>% 
+  summarise(num.stations = length(unique(STATION))) %>% 
+  as.data.frame()
+
+waSPS <- waSurveyPoints %>% 
+  st_drop_geometry() %>% 
+  group_by(Year, AreaName, CountyName, SubAreaNam) %>% 
+  summarise(num.stations = length(unique(StationNam))) %>% 
+  as.data.frame()
+
+# Visits per station
+odfVPS <- odfSurveyPoints %>% 
+  st_drop_geometry() %>% 
+  group_by(YEAR, SURVEY_ARE, DISTRICT, SITE_CODE, STATION) %>% 
+  summarise(num.surveys = length(SITE)) %>% 
+  as.data.frame()
+
+waVPS <- waSurveyPoints %>% 
+  st_drop_geometry() %>% 
+  group_by(Year, AreaName, CountyName, SubAreaNam, StationNam) %>% 
+  summarise(num.surveys = length(Month)) %>% 
+  as.data.frame()
+              
+
+ggplot() + geom_boxplot(data = odfSPS, aes(x = as.factor(YEAR), y = num.stations)) + facet_wrap('DISTRICT') + theme(axis.text.x = element_text(angle = 90)) + ylab('# Stations per stand') + labs(title = 'ODF # stations per stand') + xlab('year')
+
+ggplot() + geom_boxplot(data = odfVPS, aes(x = as.factor(YEAR), y = num.surveys)) + facet_wrap('DISTRICT') + theme(axis.text.x = element_text(angle = 90)) + ylab('# visits per station') + labs(title = 'ODF # surveys per station') + xlab('year')
+
+ggplot() + geom_boxplot(data = waSPS, aes(x = as.factor(Year), y = num.stations)) + facet_wrap('CountyName') + theme(axis.text.x = element_text(angle = 90)) + ylab('# Stations per stand') + labs(title = 'WA # stations per stand') + xlab('year')
+
+ggplot() + geom_boxplot(data = waVPS, aes(x = as.factor(Year), y = num.surveys)) + facet_wrap('CountyName') + theme(axis.text.x = element_text(angle = 90)) + ylab('# visits per station') + labs(title = 'WA # surveys per station') + xlab('year')
+```
+
+How many stands surveyed per year?
+```{r, echo = FALSE}
+# the odf data
+odfSPY <- odfSurveyPoints %>%
+  st_drop_geometry() %>% 
+  group_by(YEAR, DISTRICT) %>% 
+  summarise(num.stands = length(unique(SITE_CODE))) %>% 
+  as.data.frame()
+
+waSPY <- waSurveyPoints %>%
+  st_drop_geometry() %>% 
+  group_by(Year, CountyName) %>% 
+  summarise(num.stands = length(unique(AreaName))) %>% 
+  as.data.frame()
+
+ggplot() + geom_bar(data = odfSPY, aes(x = YEAR, y = num.stands), stat = 'identity') +
+  xlab('year') + ylab('Number of stands surveyed') + labs(title = 'ODF # of stands surveyed per year')
+ggplot() + geom_bar(data = odfSPY, aes(x = YEAR, y = num.stands), stat = 'identity') +
+  xlab('year') + ylab('Number of stands surveyed') + labs(title = 'ODF # of stands surveyed per year by county') +
+  facet_wrap('DISTRICT')
+
+ggplot() + geom_bar(data = waSPY, aes(x = Year, y = num.stands), stat = 'identity') +
+  xlab('year') + ylab('Number of stands surveyed') + labs(title = 'WA # of stands surveyed per year')
+ggplot() + geom_bar(data = waSPY, aes(x = Year, y = num.stands), stat = 'identity') +
+  xlab('year') + ylab('Number of stands surveyed') + labs(title = 'WA # of stands surveyed per year by county') +
+  facet_wrap('CountyName')
+```
+              
